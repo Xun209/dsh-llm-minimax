@@ -1,0 +1,16 @@
+# dsh-llm-minimax layer.
+#
+# `@deepseek-ai/dsh-llm-pi-ai` already ships the `minimax-cn` (CN) and `minimax`
+# (international) catalog routes — protocol anthropic-messages — so this plugin
+# adds NO adapter. Its host half:
+#   1. accepts an API key from the Settings → MiniMax page, verifies it against
+#      GET /v1/models (auto-detecting the region), stores it in the credential
+#      store under MINIMAX_CN_API_KEY / MINIMAX_API_KEY, and enables the route;
+#   2. writes the current model catalog (MiniMax-M3.1-Flash, MiniMax-M3) into
+#      `llm-pi-ai.providers[<route>].models`, keeping any models the user added
+#      and dropping the retired M2.x family;
+#   3. reads M Plan / Token Plan windows from GET /v1/token_plan/remains, and
+#      reports pay-as-you-go keys honestly (MiniMax has no balance endpoint).
+- insert:
+    - id: llm-minimax
+      name: dsh-llm-minimax
