@@ -12,8 +12,9 @@ import { apply, CHANNEL } from "../lib/index.js";
 
 const LIVE_KEY = process.env.MINIMAX_TEST_KEY;
 
-function harness({ providers = {}, rpcHandleBroken = false } = {}) {
+function harness({ providers = {}, rpcHandleBroken = false, envKeys: initialEnv = {} } = {}) {
   const store = new Map();
+  const envKeys = new Map(Object.entries(initialEnv));
   const state = { providers: structuredClone(providers), revision: 1, mutations: [] };
   const listeners = new Map();
   let rpcHandler;
@@ -42,11 +43,19 @@ function harness({ providers = {}, rpcHandleBroken = false } = {}) {
     },
   };
   const credentials = {
+    // 模拟真实凭据服务的两层结构：库里没有时回落到 `env`（环境变量 / .env）。
     async resolve(ref) {
-      return store.has(ref) ? { value: store.get(ref), source: "store" } : undefined;
+      if (store.has(ref)) return { value: store.get(ref), source: "store" };
+      if (envKeys.has(ref)) return { value: envKeys.get(ref), source: "env" };
+      return undefined;
     },
     async describe(ref) {
-      return { configured: store.has(ref), source: store.has(ref) ? "store" : undefined, writable: true };
+      const configured = store.has(ref) || envKeys.has(ref);
+      return {
+        configured,
+        source: store.has(ref) ? "store" : envKeys.has(ref) ? "env" : undefined,
+        writable: true,
+      };
     },
     async set(ref, value) {
       store.set(ref, value);
@@ -110,7 +119,7 @@ function harness({ providers = {}, rpcHandleBroken = false } = {}) {
     if (rpcHandler !== undefined) return rpcHandler(endpoint, payload, new AbortController().signal, {});
     return viaFallback(routes[0], endpoint, payload);
   };
-  return { call, state, store, emitted, logs, routes, connection: makeConnection({ webServer }) };
+  return { call, state, store, envKeys, emitted, logs, routes, connection: makeConnection({ webServer }) };
 }
 
 /** 用一个假的 IncomingMessage / ServerResponse 驱动回退路由，返回解析后的 result。 */
@@ -279,4 +288,71 @@ test("联网：国内 Key 强制选国际区域会被拒（2049），不写入",
   assert.equal(result.value.saved, false);
   assert.match(result.value.detail, /区域/);
   assert.equal(h.store.size, 0);
+});
+
+test("删除环境变量提供的 Key：如实报告删不掉，不谎报成功", async () => {
+  const h = harness({
+    providers: { minimax: { apiKeyEnv: "MINIMAX_API_KEY" } },
+    envKeys: { MINIMAX_API_KEY: "env-provided-key-000000" },
+  });
+
+  // status 必须标出这一层是环境变量给的，且库里没有。
+  const status = await h.call("status", {});
+  const intl = status.value.regions.find((r) => r.region === "intl");
+  assert.equal(intl.credential.configured, true);
+  assert.equal(intl.fromEnvironment, true, "必须标记为来自环境变量");
+  assert.equal(intl.storedInCredentialStore, false);
+  assert.equal(intl.keySource, "env");
+
+  const cleared = await h.call("clearKey", { region: "intl" });
+  assert.equal(cleared.ok, true);
+  assert.equal(cleared.value.cleared, false, "没有从库里删掉任何东西，不能报成功");
+  assert.equal(cleared.value.stillActive, true, "Key 仍然生效，界面必须知道");
+  assert.match(cleared.value.message, /环境变量/);
+
+  // 删完之后 Key 依然在（这正是用户看到的「删了还在」）。
+  const after = await h.call("status", {});
+  assert.equal(after.value.regions.find((r) => r.region === "intl").credential.configured, true);
+});
+
+test("删除库里保存的 Key：删掉后回落到环境变量也如实报告", async () => {
+  const h = harness({
+    providers: { minimax: { apiKeyEnv: "MINIMAX_API_KEY" } },
+    envKeys: { MINIMAX_API_KEY: "env-provided-key-000000" },
+  });
+  h.store.set("MINIMAX_API_KEY", "stored-in-keyring-111111");
+
+  const before = await h.call("status", {});
+  const b = before.value.regions.find((r) => r.region === "intl");
+  assert.equal(b.storedInCredentialStore, true);
+  assert.equal(b.fromEnvironment, false);
+
+  const cleared = await h.call("clearKey", { region: "intl" });
+  assert.equal(cleared.value.removedFromStore, true, "库里那份要真的删掉");
+  assert.equal(cleared.value.stillActive, true, "但环境变量那层还在，Key 仍生效");
+  assert.equal(h.store.has("MINIMAX_API_KEY"), false);
+  assert.match(cleared.value.message, /环境变量里还有一份/);
+});
+
+test("删除库里保存的 Key：没有兜底层时彻底消失", async () => {
+  const h = harness({ providers: { minimax: { apiKeyEnv: "MINIMAX_API_KEY" } } });
+  h.store.set("MINIMAX_API_KEY", "stored-only-222222");
+
+  const cleared = await h.call("clearKey", { region: "intl" });
+  assert.equal(cleared.value.cleared, true);
+  assert.equal(cleared.value.stillActive, false);
+  assert.equal(cleared.value.removedFromStore, true);
+
+  const after = await h.call("status", {});
+  const r = after.value.regions.find((x) => x.region === "intl");
+  assert.equal(r.credential.configured, false, "界面上这一行应当消失");
+  assert.equal((await h.call("quota", { region: "intl" })).value.state, "no-key");
+});
+
+test("删除本来就没有的 Key：不谎报", async () => {
+  const h = harness();
+  const cleared = await h.call("clearKey", { region: "cn" });
+  assert.equal(cleared.ok, true);
+  assert.equal(cleared.value.cleared, false);
+  assert.match(cleared.value.message, /本来就没有/);
 });
