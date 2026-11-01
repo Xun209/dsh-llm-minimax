@@ -5,6 +5,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  CONTEXT_OPTIONS,
+  DEFAULT_CONTEXT_WINDOW,
   KNOWN_MODEL_IDS,
   MODELS,
   RETIRED_MODELS,
@@ -13,6 +15,7 @@ import {
   keyHintOf,
   keyKindOf,
   mergeModels,
+  normalizeContextWindow,
   normalizeKey,
   piAiModelEntries,
   projectBucket,
@@ -208,4 +211,51 @@ test("catalogUpToDate：自己写的目录读回来（含 schema 物化的多余
 
   const noAdaptive = readBack.map((m) => ({ ...m, compat: {} }));
   assert.equal(catalogUpToDate(noAdaptive), false);
+});
+
+test("上下文档位：只有三档，默认 1M", () => {
+  assert.deepEqual(CONTEXT_OPTIONS.map((o) => o.id), [200000, 512000, 1000000]);
+  assert.equal(DEFAULT_CONTEXT_WINDOW, 1000000);
+});
+
+test("normalizeContextWindow 规整各种输入", () => {
+  assert.equal(normalizeContextWindow(512000), 512000);
+  assert.equal(normalizeContextWindow("200000"), 200000);
+  // 不认识的数值：取不超过它的最大档，避免用户手填一个超能力值。
+  assert.equal(normalizeContextWindow(400000), 200000);
+  assert.equal(normalizeContextWindow(1), 1000000, "太小也对不上档位时退回默认");
+  assert.equal(normalizeContextWindow(99999999), 1000000);
+  assert.equal(normalizeContextWindow(undefined), 1000000);
+  assert.equal(normalizeContextWindow("abc"), 1000000);
+  assert.equal(normalizeContextWindow(null), 1000000);
+});
+
+test("piAiModelEntries 按给定上下文写出所有模型", () => {
+  const entries = piAiModelEntries(200000);
+  assert.equal(entries.length, 2);
+  for (const entry of entries) assert.equal(entry.contextWindow, 200000);
+});
+
+test("mergeModels 未显式指定时，沿用已存目录里的上下文（不覆盖用户的修改）", () => {
+  // 用户在「设置 → 模型」里把窗口改成了 512K。
+  const current = [
+    { id: "MiniMax-M3.1-Flash", contextWindow: 512000 },
+    { id: "custom-1", contextWindow: 8000 },
+  ];
+  const merged = mergeModels(current);
+  assert.equal(merged[0].contextWindow, 512000, "用户改过的值必须保留");
+  assert.equal(merged[1].contextWindow, 512000, "同插件管理的模型共用一档");
+
+  // 显式指定时以指定为准。
+  assert.equal(mergeModels(current, 200000)[0].contextWindow, 200000);
+
+  // 空目录用默认。
+  assert.equal(mergeModels(undefined)[0].contextWindow, DEFAULT_CONTEXT_WINDOW);
+});
+
+test("catalogUpToDate 能识别上下文变化", () => {
+  const current = mergeModels(undefined, 1000000);
+  assert.equal(catalogUpToDate(current, 1000000), true);
+  assert.equal(catalogUpToDate(current, 512000), false, "换成别的档位必须判为需要更新");
+  assert.equal(catalogUpToDate(current), true, "不指定时沿用已存值，视为最新");
 });

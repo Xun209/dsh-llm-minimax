@@ -356,3 +356,35 @@ test("删除本来就没有的 Key：不谎报", async () => {
   assert.equal(cleared.value.cleared, false);
   assert.match(cleared.value.message, /本来就没有/);
 });
+
+test("setContext 改到已配置路由的上下文，且不影响其它字段", async () => {
+  const h = harness({
+    providers: {
+      "minimax-cn": { apiKeyEnv: "MINIMAX_CN_API_KEY", retryPolicy: { mode: "normal", maxRetries: 2 } },
+    },
+  });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(h.state.providers["minimax-cn"].models[0].contextWindow, 1000000);
+
+  const result = await h.call("setContext", { contextWindow: 200000 });
+  assert.equal(result.ok, true);
+  assert.equal(result.value.contextWindow, 200000);
+  for (const model of h.state.providers["minimax-cn"].models) {
+    assert.equal(model.contextWindow, 200000, "两个模型都跟着切");
+  }
+  assert.deepEqual(h.state.providers["minimax-cn"].retryPolicy, { mode: "normal", maxRetries: 2 }, "其它字段不动");
+  assert.equal(h.state.providers.minimax, undefined, "没配置的区域不能被顺手创建");
+
+  // 再对齐一次不应把值改回默认。
+  const synced = await h.call("sync", { region: "cn" });
+  assert.equal(synced.value.changed, false, "已经是最新，不应重复写");
+  assert.equal(h.state.providers["minimax-cn"].models[0].contextWindow, 200000);
+});
+
+test("setContext 遇到未知档位会规整成合法值", async () => {
+  const h = harness({ providers: { "minimax-cn": { apiKeyEnv: "MINIMAX_CN_API_KEY" } } });
+  await new Promise((r) => setTimeout(r, 20));
+  const result = await h.call("setContext", { contextWindow: 400000 });
+  assert.equal(result.value.contextWindow, 200000, "取不超过它的最大档");
+  assert.equal(h.state.providers["minimax-cn"].models[0].contextWindow, 200000);
+});
