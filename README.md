@@ -40,6 +40,19 @@ dsh plugin --profile <profile> add "github:elfgzp/dsh-llm-minimax#main"
 
 Key 只在宿主进程里流转，浏览器只拿回末 4 位。
 
+## 输入框工具栏
+
+选中官方 MiniMax 模型（`minimax-cn` / `minimax` 路由）时，模型选择器左边会出现两个控件：
+
+| 控件 | 含义 |
+|---|---|
+| `▣ 1M` | 上下文预算。点开可选 200K / 512K / 1M。悬停看说明 |
+| `● MiniMax 62%` | 套餐额度。悬停看 5 小时与每周窗口的剩余与重置时间 |
+
+**只对官方 MiniMax 路由生效。** 换成别的模型（腾讯内网、DeepSeek、GLM…）这两个控件会完全消失，不影响任何其它模型 —— 因为上下文预算是「模型条目」的属性，而不是会话属性：DSH 的 `selectModel` 只接受 `{provider, model, reasoningEffort}`，没有按会话设置上下文这一说。
+
+注意模型选择器里可能出现两个 MiniMax：一个带 `x0.08` 倍率（腾讯内网网关转发的），一个在 `minimax-cn` 分组下（官方 API）。**控件只在后者出现**，因为上下文预算改的是官方路由的模型目录。
+
 ## 为什么需要这个插件
 
 DSH 自带的 `@deepseek-ai/dsh-llm-pi-ai` 已经有 `minimax-cn` 和 `minimax` 两条路由（Anthropic Messages 协议），所以本插件**不实现模型适配器**，只补它缺的部分：
