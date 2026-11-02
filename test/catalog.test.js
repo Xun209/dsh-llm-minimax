@@ -346,3 +346,37 @@ test("estimatePace：窗口刚开始时数据不足，返回未知的速度", ()
   assert.equal(pace.ratePerHour, undefined);
   assert.equal(pace.exhaustsInMs, undefined);
 });
+
+test("两个窗口的曲线互不干扰：每周窗口用自己的采样，不会套上 5 小时的速度", () => {
+  const now = 20_000_000_000;
+  // 5 小时窗口：过去 30 分钟从 90% 掉到 80% → 20 %/小时
+  const intervalWin = {
+    key: "interval", remainingPercent: 80, usedPercent: 20,
+    startedAt: now - 4 * 3_600_000, resetsAt: now + 1 * 3_600_000,
+  };
+  // 每周窗口：一周用掉 25 个点，窗口平均 ≈ 0.149 %/小时；最近一天掉 5 个点
+  const weeklyWin = {
+    key: "weekly", remainingPercent: 75, usedPercent: 25,
+    startedAt: now - 7 * 24 * 3_600_000, resetsAt: now + 3 * 24 * 3_600_000,
+  };
+  const intervalSamples = [
+    { t: now - 30 * 60_000, remainingPercent: 90 },
+    { t: now, remainingPercent: 80 },
+  ];
+  const weeklySamples = [
+    { t: now - 24 * 3_600_000, remainingPercent: 80 },
+    { t: now, remainingPercent: 75 },
+  ];
+
+  const intervalPace = estimatePace(intervalWin, intervalSamples, now);
+  const weeklyPace = estimatePace(weeklyWin, weeklySamples, now);
+
+  assert.equal(intervalPace.ratePerHour, 20);
+  assert.equal(weeklyPace.ratePerHour, 5 / 24);
+  assert.ok(weeklyPace.ratePerHour < 1, "每周窗口的速率是个位数量级，不是 5 小时那个");
+
+  // 若把 5 小时的采样错喂给每周窗口，就会得到 20 %/小时、并在 3 天后推出荒谬数字。
+  const wrongPace = estimatePace(weeklyWin, intervalSamples, now);
+  assert.equal(wrongPace.ratePerHour, 20, "这正是修复前的错误路径");
+  assert.ok(wrongPace.atResetPercent > 1000, "错用采样会推出离谱的「重置时用到」百分比");
+});

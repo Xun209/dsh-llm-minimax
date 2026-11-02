@@ -388,3 +388,4 @@ test("setContext 遇到未知档位会规整成合法值", async () => {
   assert.equal(result.value.contextWindow, 200000, "取不超过它的最大档");
   assert.equal(h.state.providers["minimax-cn"].models[0].contextWindow, 200000);
 });
+
