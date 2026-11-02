@@ -11,6 +11,7 @@ import {
   MODELS,
   RETIRED_MODELS,
   catalogUpToDate,
+  estimatePace,
   failureOf,
   keyHintOf,
   keyKindOf,
@@ -258,4 +259,90 @@ test("catalogUpToDate 能识别上下文变化", () => {
   assert.equal(catalogUpToDate(current, 1000000), true);
   assert.equal(catalogUpToDate(current, 512000), false, "换成别的档位必须判为需要更新");
   assert.equal(catalogUpToDate(current), true, "不指定时沿用已存值，视为最新");
+});
+
+// ---------- 用量速度与耗尽预估 ----------
+
+test("estimatePace：无历史时用窗口平均速度（开箱即用）", () => {
+  const now = 1_000_000_000;
+  const win = {
+    key: "interval",
+    label: "文本 5 小时",
+    remainingPercent: 85,
+    usedPercent: 15,
+    startedAt: now - 5 * 3_600_000, // 窗口已过去 5 小时
+    resetsAt: now + 1 * 3_600_000,
+  };
+  const pace = estimatePace(win, [], now);
+  assert.equal(pace.basis, "average");
+  assert.equal(pace.ratePerHour, 3); // 15% / 5 小时
+  assert.equal(pace.usedPercent, 15);
+  assert.equal(pace.remainingPercent, 85);
+  // 剩 85%，每小时 3% → 约 28.3 小时用完
+  assert.ok(Math.abs(pace.exhaustsInMs / 3_600_000 - 85 / 3) < 1e-6);
+  // 距重置 1 小时，按速度会用到 15% + 3% = 18%
+  assert.ok(Math.abs(pace.atResetPercent - 18) < 1e-6);
+  assert.equal(pace.willExhaustBeforeReset, false);
+});
+
+test("estimatePace：有足够采样时用近期速度", () => {
+  const now = 10_000_000_000;
+  const win = {
+    remainingPercent: 80,
+    usedPercent: 20,
+    startedAt: now - 4 * 3_600_000,
+    resetsAt: now + 1 * 3_600_000,
+  };
+  // 采样点落在最近一小时内：86% → 80%，一小时掉 6 个点 → 6 %/小时
+  const samples = [
+    { t: now - 120 * 60_000, remainingPercent: 92 },
+    { t: now - 60 * 60_000, remainingPercent: 86 },
+    { t: now, remainingPercent: 80 },
+  ];
+  const pace = estimatePace(win, samples, now);
+  assert.equal(pace.basis, "recent");
+  assert.equal(pace.ratePerHour, 6);
+  assert.ok(Math.abs(pace.exhaustsInMs / 3_600_000 - 80 / 6) < 1e-6);
+  assert.ok(Math.abs(pace.atResetPercent - 26) < 1e-6);
+});
+
+test("estimatePace：采样跨度太短时退回窗口平均速度", () => {
+  const now = 5_000_000_000;
+  const win = { remainingPercent: 90, usedPercent: 10, startedAt: now - 4 * 3_600_000, resetsAt: now + 3_600_000 };
+  // 两个采样只隔 1 分钟 → 推不出斜率
+  const samples = [
+    { t: now - 60_000, remainingPercent: 91 },
+    { t: now, remainingPercent: 90 },
+  ];
+  const pace = estimatePace(win, samples, now);
+  assert.equal(pace.basis, "average");
+});
+
+test("estimatePace：按速度会在重置前用完时给出告警", () => {
+  const now = 2_000_000_000;
+  const win = { remainingPercent: 10, usedPercent: 90, startedAt: now - 4 * 3_600_000, resetsAt: now + 30 * 60_000 };
+  // 90% / 4 小时 = 22.5 %/小时；剩 10% → 27 分钟用完，而重置还有 30 分钟
+  const pace = estimatePace(win, [], now);
+  assert.equal(pace.willExhaustBeforeReset, true);
+  assert.ok(pace.exhaustsInMs < 30 * 60_000);
+  // 到重置时会用到 90 + 22.5*0.5 = 101.25%
+  assert.ok(pace.atResetPercent > 100);
+});
+
+test("estimatePace：没有消耗时不编造耗尽时间", () => {
+  const now = 3_000_000_000;
+  const win = { remainingPercent: 100, usedPercent: 0, startedAt: now - 3_600_000, resetsAt: now + 3_600_000 };
+  const pace = estimatePace(win, [], now);
+  assert.equal(pace.ratePerHour, 0);
+  assert.equal(pace.exhaustsInMs, undefined, "没有消耗就不该说「多久用完」");
+  assert.equal(pace.atResetPercent, 0);
+});
+
+test("estimatePace：窗口刚开始时数据不足，返回未知的速度", () => {
+  const now = 4_000_000_000;
+  const win = { remainingPercent: 100, usedPercent: 0, startedAt: now - 60_000, resetsAt: now + 5 * 3_600_000 };
+  const pace = estimatePace(win, [], now);
+  assert.equal(pace.basis, "none");
+  assert.equal(pace.ratePerHour, undefined);
+  assert.equal(pace.exhaustsInMs, undefined);
 });
